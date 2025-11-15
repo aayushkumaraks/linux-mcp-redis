@@ -104,4 +104,4 @@ Install `ufw` if you don't have it. IT IS EASYYYYYY!
 
 **THAT'S IT!**
 
-Now go and install the MCP client.
+Now go and install the MCP bridge.
