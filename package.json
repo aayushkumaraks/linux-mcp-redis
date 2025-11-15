@@ -1,0 +1,27 @@
+{
+  "name": "linux-mcp-redis",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev:mcp": "node server.js",
+    "dev:http": "node server_http.js",
+    "dev:worker": "node worker.js",
+    "dev": "concurrently -k -n MCP,HTTP,WORKER -c green,cyan,yellow \"npm run dev:mcp\" \"npm run dev:http\" \"npm run dev:worker\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
+    "bullmq": "^5.63.1",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "ioredis": "^5.8.2",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
