@@ -9,39 +9,51 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379"; // default to local Redis
-const connection = new Redis(REDIS_URL, { maxRetriesPerRequest: null }); // persistent connection
+const REDIS_URL = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const connection = new Redis(REDIS_URL, { maxRetriesPerRequest: null });
+const queue = new Queue("mcp-commands", { connection });
 
-const queue = new Queue("mcp-commands", { connection }); // BullMQ queue for command jobs
-
-const SERVER_NAME = process.env.MCP_NAME || "linux-mcp"; 
+const SERVER_NAME = process.env.MCP_NAME || "linux-mcp";
 const SERVER_VERSION = process.env.MCP_VERSION || "1.0.0";
-const JOB_RESULT_TTL = Number(process.env.JOB_RESULT_TTL || 86400); // time to live for job results in seconds. Probably won't need it
+const JOB_TIMEOUT = Number(process.env.JOB_TIMEOUT || 30000); // 30s default
+const JOB_RESULT_TTL = Number(process.env.JOB_RESULT_TTL || 86400);
 
-// Validate API key: check HMAC(hash) key entry first, then plaintext fallback for compatibility.
 async function validateApiKey(apiKey) {
   if (!apiKey) return false;
 
-  // Check hashed storage (if you created keys with HMAC approach)
   if (process.env.SERVER_SECRET) {
     const hmac = crypto.createHmac("sha256", process.env.SERVER_SECRET).update(apiKey).digest("hex");
     const hashed = await connection.get(`mcp:apikeyhash:${hmac}`);
     if (hashed) return true;
   }
 
-  // Backwards-compatibility: check plaintext key storage
   const plain = await connection.get(`mcp:apikey:${apiKey}`);
   if (plain) return true;
 
   return false;
 }
 
-// Restrict file ops to $HOME
 function resolveSafe(homeDir, requestedPath) {
   const HOME = homeDir || process.env.HOME || "/root";
   const abs = path.resolve(HOME, requestedPath || ".");
   if (!abs.startsWith(HOME)) throw new Error("Path outside allowed home directory");
   return abs;
+}
+
+// Wait for job completion with polling
+async function waitForJobCompletion(jobId, maxWait = JOB_TIMEOUT) {
+  const startTime = Date.now();
+  const pollInterval = 100; // 100ms polling
+
+  while (Date.now() - startTime < maxWait) {
+    const result = await connection.get(`mcp:jobresult:${jobId}`);
+    if (result) {
+      return JSON.parse(result);
+    }
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+  }
+
+  throw new Error(`Job ${jobId} timeout after ${maxWait}ms`);
 }
 
 const server = new Server(
@@ -51,14 +63,26 @@ const server = new Server(
       handler: async (ctx, { apiKey, command, cwd }) => {
         if (!await validateApiKey(apiKey)) return { error: "unauthorized" };
         if (!command || typeof command !== "string") return { error: "invalid command" };
+        if (command.length > 5000) return { error: "command too long" };
 
-        const job = await queue.add("run", { apiKey, command, cwd: cwd || null }, {
-          removeOnComplete: false,
-          removeOnFail: false,
-          attempts: 1
-        });
+        try {
+          const job = await queue.add("run", { command, cwd: cwd || null }, {
+            removeOnComplete: false,
+            removeOnFail: false,
+            attempts: 1
+          });
 
-        return { jobId: job.id };
+          // Wait for job completion
+          const result = await waitForJobCompletion(job.id);
+          
+          if (result.requiresInput) {
+            return { status: "interactive_required", message: result.error, jobId: job.id };
+          }
+
+          return result;
+        } catch (error) {
+          return { error: error.message };
+        }
       }
     },
 
@@ -68,7 +92,7 @@ const server = new Server(
         if (!jobId) return { error: "missing jobId" };
         const data = await connection.get(`mcp:jobresult:${jobId}`);
         if (!data) return { status: "pending" };
-        return { status: "done", payload: JSON.parse(data) };
+        return JSON.parse(data);
       }
     },
 
